@@ -40,8 +40,10 @@ export const handler = async (event) => {
   });
   if (!r.ok) return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia invalida o expirada" }) };
   const license = await r.json();
-  if (license.status !== "active") return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Suscripcion inactiva" }) };
-
+  if (license.status === "revoked" || license.status === "disabled") {
+  return { statusCode: 402, headers, body: JSON.stringify({ error: "Licencia revocada o deshabilitada" }) };
+}
+  
   // 2) Chequear cuota mensual (Netlify Blobs gratis)
   const { getStore } = await import("@netlify/blobs");
   const store = getStore("cuotas");
