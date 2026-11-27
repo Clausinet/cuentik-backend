@@ -33,9 +33,9 @@ export const handler = async (event) => {
   }
   
   const license = await r.json();
-  if (license.status !== "active") {
-    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Suscripcion inactiva" }) };
-  }
+if (license.status === "revoked" || license.status === "disabled") {
+  return { statusCode: 402, headers, body: JSON.stringify({ error: "Licencia revocada o deshabilitada" }) };
+}
 
   // Leer cuota mensual de Netlify Blobs
   const { getStore } = await import("@netlify/blobs");
