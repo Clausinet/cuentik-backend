@@ -7,7 +7,8 @@ Reglas obligatorias:
 1. El campo texto debe ser UN SOLO string sin saltos de linea.
 2. Todas las palabras en efectos deben aparecer textualmente en texto.
 3. Los archivos de sonido NO deben tener extension.
-4. Inclui entre 5 y 10 efectos distribuidos a lo largo del cuento.`;
+4. Inclui entre 5 y 10 efectos distribuidos a lo largo del cuento.
+5. Efectos de sonido permitidos para el campo "archivo" (usa SOLO estos nombres exactos): "viento_suave","pasos_hojas","magia_varita","campanillas","risas_duendes","burbujas_agua","rugido_amigable","trueno_suave","fuego_hogar","pasos_nieve","reloj_cucu","buho_nocturno".`;
 
 const corsHeaders = {
   "Content-Type": "application/json",
