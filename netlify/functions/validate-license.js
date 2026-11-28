@@ -10,15 +10,14 @@ const corsHeaders = {
 
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: corsHeaders };
-  
+
   let input;
   try { input = JSON.parse(event.body || "{}"); }
   catch { return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "JSON invalido" }) }; }
-  
-  const { licenseKey } = input;
+
+  const licenseKey = (input.licenseKey || "").trim().toUpperCase();
   if (!licenseKey) return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "Falta licenseKey" }) };
 
-  // Validar con Polar
   const r = await fetch(`${POLAR}/license-keys/validate`, {
     method: "POST",
     headers: {
@@ -27,30 +26,24 @@ export const handler = async (event) => {
     },
     body: JSON.stringify({ key: licenseKey })
   });
-  
-  if (!r.ok) {
-    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia invalida o expirada" }) };
-  }
-  
-  const license = await r.json();
-if (license.status === "revoked" || license.status === "disabled") {
-  return { statusCode: 402, headers, body: JSON.stringify({ error: "Licencia revocada o deshabilitada" }) };
-}
 
-  // Leer cuota mensual de Netlify Blobs
+  if (!r.ok) {
+    const detail = await r.text();
+    console.error("Polar validate error:", r.status, detail);
+    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia invalida o expirada", polar_status: r.status, polar_detail: detail.slice(0, 200) }) };
+  }
+
+  const license = await r.json();
+  // Estados reales de Polar: granted (valida), disabled, revoked. "active" NO existe.
+  if (license.status === "revoked" || license.status === "disabled") {
+    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia revocada o deshabilitada", polar_status: license.status }) };
+  }
+
   const { getStore } = await import("@netlify/blobs");
   const store = getStore("cuotas");
-  const month = new Date().toISOString().slice(0, 7); // "2026-11"
+  const month = new Date().toISOString().slice(0, 7);
   const rec = JSON.parse((await store.get(licenseKey)) || "{}");
   const used = rec.month === month ? rec.used : 0;
 
-  return {
-    statusCode: 200,
-    headers: corsHeaders,
-    body: JSON.stringify({
-      status: "active",
-      remaining: Math.max(0, CUOTA_MENSUAL - used),
-      month: month
-    })
-  };
+  return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ status: "active", remaining: Math.max(0, CUOTA_MENSUAL - used), month }) };
 };
