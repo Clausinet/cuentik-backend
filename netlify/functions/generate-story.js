@@ -1,3 +1,5 @@
+const POLAR = "https://api.polar.sh/v1";
+const ORGANIZATION_ID = "c0c3490d-f023-4258-bf72-0122e24b323e";
 const CUOTA_MENSUAL = 30;
 
 const SYSTEM_PROMPT = `Eres un autor profesional de cuentos infantiles pedagogicos y disenador de sonido para una app de lectura en voz alta con efectos sonoros.
@@ -32,27 +34,32 @@ export const handler = async (event) => {
     return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "Faltan licenseKey o userPrompt" }) };
   }
 
-  // 1) Validar con endpoint público de Polar
+  // 1) Validar licencia con endpoint merchant-side (con organization_id)
   let license;
   try {
-    const r = await fetch("https://api.polar.sh/v1/customer-portal/license-keys/validate", {
+    const r = await fetch(`${POLAR}/license-keys/validate`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: licenseKey }) // <-- FIX: ahora es "key"
+      headers: {
+        "Authorization": `Bearer ${process.env.POLAR_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        key: licenseKey,
+        organization_id: ORGANIZATION_ID
+      })
     });
     if (!r.ok) {
       const detail = await r.text();
       console.error("Polar validate error:", r.status, detail);
-      return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia invalida o expirada", polar_status: r.status, polar_detail: detail.slice(0, 200) }) };
+      return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia invalida o expirada", polar_status: r.status, polar_detail: detail.slice(0, 300) }) };
     }
     license = await r.json();
   } catch (e) {
     return { statusCode: 502, headers: corsHeaders, body: JSON.stringify({ error: "No se pudo contactar a Polar" }) };
   }
 
-  const status = license.license_key?.status || license.status;
-  if (status === "revoked" || status === "disabled") {
-    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia revocada o deshabilitada", polar_status: status }) };
+  if (license.status === "revoked" || license.status === "disabled") {
+    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia revocada o deshabilitada", polar_status: license.status }) };
   }
 
   // 2) Cupo mensual con Netlify Blobs
@@ -65,7 +72,7 @@ export const handler = async (event) => {
     return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Cupo mensual agotado", remaining: 0 }) };
   }
 
-  // 3) IA con clave server-side
+  // 3) IA con clave server-side (1 reintento automático)
   const aiModel = process.env.AI_MODEL || "google/gemini-2.0-flash-exp:free";
   let raw = "";
   for (let intento = 0; intento < 2 && !raw; intento++) {
