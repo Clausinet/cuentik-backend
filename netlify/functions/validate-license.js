@@ -1,4 +1,4 @@
-const POLAR = "https://api.polar.sh/v1";
+const CUOTA_MENSUAL = 30;
 
 const corsHeaders = {
   "Content-Type": "application/json",
@@ -17,14 +17,11 @@ export const handler = async (event) => {
   const licenseKey = (input.licenseKey || "").trim().toUpperCase();
   if (!licenseKey) return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "Falta licenseKey" }) };
 
-  // Validar con Polar (SIN incrementar uso, solo consulta)
-  const r = await fetch(`${POLAR}/license-keys/validate`, {
+  // Endpoint público de Polar (no requiere token ni organization_id)
+  const r = await fetch("https://api.polar.sh/v1/customer-portal/license-keys/validate", {
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.POLAR_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ key: licenseKey })
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ license_key: licenseKey })
   });
 
   if (!r.ok) {
@@ -35,22 +32,28 @@ export const handler = async (event) => {
 
   const license = await r.json();
   
-  // Estados reales de Polar: granted (valida), disabled, revoked
-  if (license.status === "revoked" || license.status === "disabled") {
-    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia revocada o deshabilitada", polar_status: license.status }) };
+  // El endpoint público devuelve: { license_key: { status: "granted" | "revoked" | "disabled", ... } }
+  const status = license.license_key?.status || license.status;
+  if (status === "revoked" || status === "disabled") {
+    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia revocada o deshabilitada", polar_status: status }) };
   }
 
-  // Polar devuelve el uso restante si el benefit tiene "Limit Usage" activado
-  const remaining = license.usage?.remaining ?? 30;
+  // Contador mensual con Netlify Blobs (reset automático cada mes)
+  const { getStore } = await import("@netlify/blobs");
+  const store = getStore("cuotas");
+  const month = new Date().toISOString().slice(0, 7);
+  const rec = JSON.parse((await store.get(licenseKey)) || "{}");
+  const used = rec.month === month ? rec.used : 0;
 
   return {
     statusCode: 200,
     headers: corsHeaders,
     body: JSON.stringify({
       status: "active",
-      remaining: remaining,
-      used: license.usage?.used ?? 0,
-      limit: license.usage?.limit ?? 30
+      remaining: Math.max(0, CUOTA_MENSUAL - used),
+      used: used,
+      limit: CUOTA_MENSUAL,
+      month: month
     })
   };
 };
