@@ -21,7 +21,7 @@ export const handler = async (event) => {
   const r = await fetch("https://api.polar.sh/v1/customer-portal/license-keys/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ license_key: licenseKey })
+    body: JSON.stringify({ key: licenseKey }) // <-- FIX: ahora es "key"
   });
 
   if (!r.ok) {
@@ -32,13 +32,13 @@ export const handler = async (event) => {
 
   const license = await r.json();
   
-  // El endpoint público devuelve: { license_key: { status: "granted" | "revoked" | "disabled", ... } }
+  // El endpoint público devuelve la licencia anidada o directa según la versión
   const status = license.license_key?.status || license.status;
   if (status === "revoked" || status === "disabled") {
     return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia revocada o deshabilitada", polar_status: status }) };
   }
 
-  // Contador mensual con Netlify Blobs (reset automático cada mes)
+  // Contador mensual con Netlify Blobs
   const { getStore } = await import("@netlify/blobs");
   const store = getStore("cuotas");
   const month = new Date().toISOString().slice(0, 7);
