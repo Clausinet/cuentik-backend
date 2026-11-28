@@ -1,5 +1,6 @@
 const POLAR = "https://api.polar.sh/v1";
 const ORGANIZATION_ID = "c0c3490d-f023-4258-bf72-0122e24b323e";
+const CUOTA_MENSUAL = 30;
 
 const SYSTEM_PROMPT = `Eres un autor profesional de cuentos infantiles pedagogicos y disenador de sonido para una app de lectura en voz alta con efectos sonoros.
 Responde UNICAMENTE con un objeto JSON valido, sin markdown, sin comentarios y sin texto adicional, con esta estructura exacta:
@@ -33,7 +34,7 @@ export const handler = async (event) => {
     return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "Faltan licenseKey o userPrompt" }) };
   }
 
-  // 1) Validar licencia Polar + descontar 1 uso nativo
+  // 1) Validar licencia Polar
   let license;
   try {
     const r = await fetch(`${POLAR}/license-keys/validate`, {
@@ -44,11 +45,9 @@ export const handler = async (event) => {
       },
       body: JSON.stringify({
         key: licenseKey,
-        organization_id: ORGANIZATION_ID,
-        increment_usage: 1  // Polar descuenta 1 de los 30 automáticamente
+        organization_id: ORGANIZATION_ID
       })
     });
-    
     if (!r.ok) {
       const detail = await r.text();
       console.error("Polar validate error:", r.status, detail);
@@ -63,56 +62,68 @@ export const handler = async (event) => {
     return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia revocada o deshabilitada", polar_status: license.status }) };
   }
 
-  // Polar devuelve el uso restante después de descontar
-  const remaining = license.usage?.remaining ?? 0;
-  if (remaining < 0) {
+  // 2) Cupo mensual con Netlify Blobs
+  const { getStore } = await import("@netlify/blobs");
+  const store = getStore("cuotas");
+  const month = new Date().toISOString().slice(0, 7);
+  const rec = JSON.parse((await store.get(licenseKey)) || "{}");
+  const used = rec.month === month ? rec.used : 0;
+  if (used >= CUOTA_MENSUAL) {
     return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Cupo mensual agotado", remaining: 0 }) };
   }
 
-  // 2) IA con clave server-side (1 reintento automático)
-  const aiModel = process.env.AI_MODEL || "google/gemini-2.0-flash-exp:free";
+  // 3) IA con Google Gemini API directo (100% gratis, sin OpenRouter)
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+  if (!geminiApiKey) {
+    return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: "API key de Gemini no configurada" }) };
+  }
+
   let raw = "";
   for (let intento = 0; intento < 2 && !raw; intento++) {
     try {
-      const ai = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      const ai = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`, {
         method: "POST",
-        headers: {
-          "Authorization": `Bearer ${process.env.AI_API_KEY}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://cuentik.netlify.app",
-          "X-Title": "Cuentik Backend"
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: aiModel,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userPrompt }
-          ]
+          contents: [
+            { role: "user", parts: [{ text: SYSTEM_PROMPT }] },
+            { role: "model", parts: [{ text: "Entendido. Generaré el cuento en formato JSON estricto." }] },
+            { role: "user", parts: [{ text: userPrompt }] }
+          ],
+          generationConfig: {
+            temperature: 0.8,
+            maxOutputTokens: 2048
+          }
         })
       });
+      
       if (!ai.ok) {
-        console.error("OpenRouter error:", ai.status, await ai.text());
+        const errorText = await ai.text();
+        console.error("Gemini error:", ai.status, errorText);
         continue;
       }
+      
       const data = await ai.json();
-      raw = data?.choices?.[0]?.message?.content || "";
+      raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
     } catch (e) {
-      console.error("OpenRouter fetch error:", e);
+      console.error("Gemini fetch error:", e);
     }
   }
+  
   if (!raw) {
     return { statusCode: 502, headers: corsHeaders, body: JSON.stringify({ error: "IA ocupada, intenta de nuevo" }) };
   }
 
-  // 3) Devolver cuento + usos restantes
+  // 4) Descontar cupo y devolver
+  await store.set(licenseKey, JSON.stringify({ month, used: used + 1 }));
   return {
     statusCode: 200,
     headers: corsHeaders,
     body: JSON.stringify({
       story_raw: raw,
-      remaining: remaining,
-      used: license.usage?.used ?? 0,
-      limit: license.usage?.limit ?? 30
+      remaining: CUOTA_MENSUAL - (used + 1),
+      used: used + 1,
+      limit: CUOTA_MENSUAL
     })
   };
 };
