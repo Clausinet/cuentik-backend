@@ -1,7 +1,4 @@
-// Cuentik backend: valida licencia Polar, descuenta 1 uso nativo
-// y genera el cuento con IA. Ningún secreto sale del servidor.
-
-const POLAR = "https://api.polar.sh/v1";
+const CUOTA_MENSUAL = 30;
 
 const SYSTEM_PROMPT = `Eres un autor profesional de cuentos infantiles pedagogicos y disenador de sonido para una app de lectura en voz alta con efectos sonoros.
 Responde UNICAMENTE con un objeto JSON valido, sin markdown, sin comentarios y sin texto adicional, con esta estructura exacta:
@@ -25,7 +22,6 @@ const corsHeaders = {
 export const handler = async (event) => {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: corsHeaders };
 
-  // ---------- Entrada ----------
   let input;
   try { input = JSON.parse(event.body || "{}"); }
   catch { return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "JSON invalido" }) }; }
@@ -36,21 +32,14 @@ export const handler = async (event) => {
     return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "Faltan licenseKey o userPrompt" }) };
   }
 
-  // ---------- 1) Validar licencia Polar + descontar 1 uso nativo ----------
+  // 1) Validar con endpoint público de Polar
   let license;
   try {
-    const r = await fetch(`${POLAR}/license-keys/validate`, {
+    const r = await fetch("https://api.polar.sh/v1/customer-portal/license-keys/validate", {
       method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.POLAR_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        key: licenseKey,
-        increment_usage: 1  // Polar descuenta 1 de los 30 automáticamente
-      })
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ license_key: licenseKey })
     });
-    
     if (!r.ok) {
       const detail = await r.text();
       console.error("Polar validate error:", r.status, detail);
@@ -61,18 +50,22 @@ export const handler = async (event) => {
     return { statusCode: 502, headers: corsHeaders, body: JSON.stringify({ error: "No se pudo contactar a Polar" }) };
   }
 
-  // Estados reales de Polar: granted (valida), disabled, revoked
-  if (license.status === "revoked" || license.status === "disabled") {
-    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia revocada o deshabilitada", polar_status: license.status }) };
+  const status = license.license_key?.status || license.status;
+  if (status === "revoked" || status === "disabled") {
+    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia revocada o deshabilitada", polar_status: status }) };
   }
 
-  // Polar devuelve el uso restante después de descontar
-  const remaining = license.usage?.remaining ?? 0;
-  if (remaining < 0) {
+  // 2) Cupo mensual con Netlify Blobs
+  const { getStore } = await import("@netlify/blobs");
+  const store = getStore("cuotas");
+  const month = new Date().toISOString().slice(0, 7);
+  const rec = JSON.parse((await store.get(licenseKey)) || "{}");
+  const used = rec.month === month ? rec.used : 0;
+  if (used >= CUOTA_MENSUAL) {
     return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Cupo mensual agotado", remaining: 0 }) };
   }
 
-  // ---------- 2) IA con clave server-side (1 reintento automático) ----------
+  // 3) IA con clave server-side
   const aiModel = process.env.AI_MODEL || "google/gemini-2.0-flash-exp:free";
   let raw = "";
   for (let intento = 0; intento < 2 && !raw; intento++) {
@@ -107,15 +100,16 @@ export const handler = async (event) => {
     return { statusCode: 502, headers: corsHeaders, body: JSON.stringify({ error: "IA ocupada, intenta de nuevo" }) };
   }
 
-  // ---------- 3) Devolver cuento + usos restantes ----------
+  // 4) Descontar cupo y devolver
+  await store.set(licenseKey, JSON.stringify({ month, used: used + 1 }));
   return {
     statusCode: 200,
     headers: corsHeaders,
     body: JSON.stringify({
       story_raw: raw,
-      remaining: remaining,
-      used: license.usage?.used ?? 0,
-      limit: license.usage?.limit ?? 30
+      remaining: CUOTA_MENSUAL - (used + 1),
+      used: used + 1,
+      limit: CUOTA_MENSUAL
     })
   };
 };
