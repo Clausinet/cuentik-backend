@@ -38,7 +38,7 @@ export const handler = async (event) => {
     const r = await fetch("https://api.polar.sh/v1/customer-portal/license-keys/validate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ license_key: licenseKey })
+      body: JSON.stringify({ key: licenseKey }) // <-- FIX: ahora es "key"
     });
     if (!r.ok) {
       const detail = await r.text();
