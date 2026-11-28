@@ -1,8 +1,7 @@
-// Cuentik backend: valida licencia Polar, controla cupo mensual (30)
+// Cuentik backend: valida licencia Polar, descuenta 1 uso nativo
 // y genera el cuento con IA. Ningún secreto sale del servidor.
 
 const POLAR = "https://api.polar.sh/v1";
-const CUOTA_MENSUAL = 30;
 
 const SYSTEM_PROMPT = `Eres un autor profesional de cuentos infantiles pedagogicos y disenador de sonido para una app de lectura en voz alta con efectos sonoros.
 Responde UNICAMENTE con un objeto JSON valido, sin markdown, sin comentarios y sin texto adicional, con esta estructura exacta:
@@ -37,7 +36,7 @@ export const handler = async (event) => {
     return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "Faltan licenseKey o userPrompt" }) };
   }
 
-  // ---------- 1) Licencia Polar ----------
+  // ---------- 1) Validar licencia Polar + descontar 1 uso nativo ----------
   let license;
   try {
     const r = await fetch(`${POLAR}/license-keys/validate`, {
@@ -46,8 +45,12 @@ export const handler = async (event) => {
         "Authorization": `Bearer ${process.env.POLAR_TOKEN}`,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ key: licenseKey })
+      body: JSON.stringify({
+        key: licenseKey,
+        increment_usage: 1  // Polar descuenta 1 de los 30 automáticamente
+      })
     });
+    
     if (!r.ok) {
       const detail = await r.text();
       console.error("Polar validate error:", r.status, detail);
@@ -58,22 +61,18 @@ export const handler = async (event) => {
     return { statusCode: 502, headers: corsHeaders, body: JSON.stringify({ error: "No se pudo contactar a Polar" }) };
   }
 
-  // Estados reales de Polar: granted (valida), disabled, revoked. "active" NO existe.
+  // Estados reales de Polar: granted (valida), disabled, revoked
   if (license.status === "revoked" || license.status === "disabled") {
     return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia revocada o deshabilitada", polar_status: license.status }) };
   }
 
-  // ---------- 2) Cupo mensual (Netlify Blobs, reset automático cada mes) ----------
-  const { getStore } = await import("@netlify/blobs");
-  const store = getStore("cuotas");
-  const month = new Date().toISOString().slice(0, 7); // ej: "2026-11"
-  const rec = JSON.parse((await store.get(licenseKey)) || "{}");
-  const used = rec.month === month ? rec.used : 0;
-  if (used >= CUOTA_MENSUAL) {
+  // Polar devuelve el uso restante después de descontar
+  const remaining = license.usage?.remaining ?? 0;
+  if (remaining < 0) {
     return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Cupo mensual agotado", remaining: 0 }) };
   }
 
-  // ---------- 3) IA con clave server-side (1 reintento automático) ----------
+  // ---------- 2) IA con clave server-side (1 reintento automático) ----------
   const aiModel = process.env.AI_MODEL || "google/gemini-2.0-flash-exp:free";
   let raw = "";
   for (let intento = 0; intento < 2 && !raw; intento++) {
@@ -108,11 +107,15 @@ export const handler = async (event) => {
     return { statusCode: 502, headers: corsHeaders, body: JSON.stringify({ error: "IA ocupada, intenta de nuevo" }) };
   }
 
-  // ---------- 4) Descontar cupo y devolver ----------
-  await store.set(licenseKey, JSON.stringify({ month, used: used + 1 }));
+  // ---------- 3) Devolver cuento + usos restantes ----------
   return {
     statusCode: 200,
     headers: corsHeaders,
-    body: JSON.stringify({ story_raw: raw, remaining: CUOTA_MENSUAL - (used + 1) })
+    body: JSON.stringify({
+      story_raw: raw,
+      remaining: remaining,
+      used: license.usage?.used ?? 0,
+      limit: license.usage?.limit ?? 30
+    })
   };
 };
