@@ -1,3 +1,5 @@
+const POLAR = "https://api.polar.sh/v1";
+const ORGANIZATION_ID = "c0c3490d-f023-4258-bf72-0122e24b323e";
 const CUOTA_MENSUAL = 30;
 
 const corsHeaders = {
@@ -17,28 +19,33 @@ export const handler = async (event) => {
   const licenseKey = (input.licenseKey || "").trim().toUpperCase();
   if (!licenseKey) return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "Falta licenseKey" }) };
 
-  // Endpoint público de Polar (no requiere token ni organization_id)
-  const r = await fetch("https://api.polar.sh/v1/customer-portal/license-keys/validate", {
+  // Endpoint merchant-side (requiere organization_id)
+  const r = await fetch(`${POLAR}/license-keys/validate`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key: licenseKey }) // <-- FIX: ahora es "key"
+    headers: {
+      "Authorization": `Bearer ${process.env.POLAR_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      key: licenseKey,
+      organization_id: ORGANIZATION_ID
+    })
   });
 
   if (!r.ok) {
     const detail = await r.text();
     console.error("Polar validate error:", r.status, detail);
-    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia invalida o expirada", polar_status: r.status, polar_detail: detail.slice(0, 200) }) };
+    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia invalida o expirada", polar_status: r.status, polar_detail: detail.slice(0, 300) }) };
   }
 
   const license = await r.json();
   
-  // El endpoint público devuelve la licencia anidada o directa según la versión
-  const status = license.license_key?.status || license.status;
-  if (status === "revoked" || status === "disabled") {
-    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia revocada o deshabilitada", polar_status: status }) };
+  // Estados reales de Polar: granted (valida), disabled, revoked
+  if (license.status === "revoked" || license.status === "disabled") {
+    return { statusCode: 402, headers: corsHeaders, body: JSON.stringify({ error: "Licencia revocada o deshabilitada", polar_status: license.status }) };
   }
 
-  // Contador mensual con Netlify Blobs
+  // Contador mensual con Netlify Blobs (reset automático cada mes)
   const { getStore } = await import("@netlify/blobs");
   const store = getStore("cuotas");
   const month = new Date().toISOString().slice(0, 7);
